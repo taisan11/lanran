@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g., v0.1.0)'
+        description: "Release tag (e.g., v0.1.0)"
         required: true
         type: string
 
@@ -15,11 +15,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macOS
-            runner: macos-latest
-            arch: x86_64
-            target: x86_64-apple-darwin
-
           - os: macOS
             runner: macos-14
             arch: arm64
@@ -36,7 +31,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -64,7 +59,7 @@ jobs:
           cp target/${{ matrix.target }}/release/lanran release/lanran-${{ matrix.os }}-${{ matrix.arch }}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lanran-${{ matrix.os }}-${{ matrix.arch }}
           path: release/lanran-${{ matrix.os }}-${{ matrix.arch }}
@@ -78,10 +73,10 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
 
       - name: Prepare release files
         run: |
@@ -90,7 +85,7 @@ jobs:
           ls -la release_files/
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag }}
           files: release_files/*
