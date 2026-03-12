@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g., v0.1.0)"
+        description: 'Release tag (e.g., v0.1.0)'
         required: true
         type: string
 
@@ -14,26 +14,29 @@ jobs:
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
-        - os: macOS
-          runner: macos-latest
-          arch: arm64
-          target: aarch64-apple-darwin
-          artifact: lanran
+        include:
+          - os: macOS
+            runner: macos-latest
+            arch: x86_64
+            target: x86_64-apple-darwin
 
-        - os: Linux
-          runner: ubuntu-latest
-          arch: x86_64
-          target: x86_64-unknown-linux-gnu
-          artifact: lanran
+          - os: macOS
+            runner: macos-14
+            arch: arm64
+            target: aarch64-apple-darwin
 
-        - os: Linux
-          runner: ubuntu-latest
-          arch: arm64
-          target: aarch64-unknown-linux-gnu
-          artifact: lanran
+          - os: Linux
+            runner: ubuntu-latest
+            arch: x86_64
+            target: x86_64-unknown-linux-gnu
+
+          - os: Linux
+            runner: ubuntu-latest
+            arch: arm64
+            target: aarch64-unknown-linux-gnu
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -43,28 +46,28 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Install cross (for arm64)
+      - name: Install cross (for arm64 Linux)
         if: matrix.arch == 'arm64' && matrix.os == 'Linux'
         run: cargo install cross
 
-      - name: Build (native)
-        if: matrix.arch == 'x86_64' || matrix.os == 'macOS'
+      - name: Build
+        if: matrix.os == 'macOS' || matrix.arch == 'x86_64'
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Build (cross)
+      - name: Build with cross
         if: matrix.arch == 'arm64' && matrix.os == 'Linux'
         run: cross build --release --target ${{ matrix.target }}
 
       - name: Prepare artifact
         run: |
-          mkdir -p release_artifact
-          cp target/${{ matrix.target }}/release/${{ matrix.artifact }} release_artifact/${{ matrix.artifact }}-${{ matrix.os }}-${{ matrix.arch }}
+          mkdir -p release
+          cp target/${{ matrix.target }}/release/lanran release/lanran-${{ matrix.os }}-${{ matrix.arch }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}-${{ matrix.os }}-${{ matrix.arch }}
-          path: release_artifact/${{ matrix.artifact }}-${{ matrix.os }}-${{ matrix.arch }}
+          name: lanran-${{ matrix.os }}-${{ matrix.arch }}
+          path: release/lanran-${{ matrix.os }}-${{ matrix.arch }}
           retention-days: 1
 
   release:
@@ -80,24 +83,18 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
 
-      - name: Organize artifacts
+      - name: Prepare release files
         run: |
-          mkdir -p release
-          find . -name "lanran-*" -type f -exec cp {} release/ \;
-          ls -la release/
+          mkdir -p release_files
+          find . -name "lanran-*" -type f -exec mv {} release_files/ \;
+          ls -la release_files/
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ github.event.inputs.tag }}
-          files: release/*
+          files: release_files/*
           draft: false
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Clean artifacts
-        if: always()
-        uses: geekyeggo/delete-artifact@v2
-        with:
-          name: lanran-*
