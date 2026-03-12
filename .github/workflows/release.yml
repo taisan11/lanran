@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g., v0.1.0)"
+        required: true
+        type: string
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        - os: macOS
+          runner: macos-latest
+          arch: arm64
+          target: aarch64-apple-darwin
+          artifact: lanran
+
+        - os: Linux
+          runner: ubuntu-latest
+          arch: x86_64
+          target: x86_64-unknown-linux-gnu
+          artifact: lanran
+
+        - os: Linux
+          runner: ubuntu-latest
+          arch: arm64
+          target: aarch64-unknown-linux-gnu
+          artifact: lanran
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross (for arm64)
+        if: matrix.arch == 'arm64' && matrix.os == 'Linux'
+        run: cargo install cross
+
+      - name: Build (native)
+        if: matrix.arch == 'x86_64' || matrix.os == 'macOS'
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build (cross)
+        if: matrix.arch == 'arm64' && matrix.os == 'Linux'
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p release_artifact
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact }} release_artifact/${{ matrix.artifact }}-${{ matrix.os }}-${{ matrix.arch }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}-${{ matrix.os }}-${{ matrix.arch }}
+          path: release_artifact/${{ matrix.artifact }}-${{ matrix.os }}-${{ matrix.arch }}
+          retention-days: 1
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Organize artifacts
+        run: |
+          mkdir -p release
+          find . -name "lanran-*" -type f -exec cp {} release/ \;
+          ls -la release/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          files: release/*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Clean artifacts
+        if: always()
+        uses: geekyeggo/delete-artifact@v2
+        with:
+          name: lanran-*
