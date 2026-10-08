@@ -10,7 +10,7 @@ use pnet::util::MacAddr;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, BufRead};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct OuiDb {
     /// OUI (u32 上位24bit) -> ベンダー名
@@ -25,15 +25,22 @@ impl OuiDb {
         if !path.exists() {
             println!("  IEEE OUI DBをダウンロード中... (~3MB)");
             if let Err(e) = download(&path) {
-                eprintln!("  警告: OUIダウンロード失敗: {} → ベンダー名は表示されません", e);
-                return Self { map: HashMap::new() };
+                eprintln!(
+                    "  警告: OUIダウンロード失敗: {} → ベンダー名は表示されません",
+                    e
+                );
+                return Self {
+                    map: HashMap::new(),
+                };
             }
             println!("  ダウンロード完了: {}", path.display());
         } else {
             println!("  OUIキャッシュ使用: {}", path.display());
         }
 
-        Self { map: parse_csv(&path) }
+        Self {
+            map: parse_csv(&path),
+        }
     }
 
     /// MAC アドレスからベンダー名を引く
@@ -45,14 +52,13 @@ impl OuiDb {
 }
 
 fn cache_path() -> PathBuf {
-    let base = dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    let base = dirs::cache_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
     let dir = base.join("arp-scan");
     fs::create_dir_all(&dir).ok();
     dir.join("oui.csv")
 }
 
-fn download(path: &PathBuf) -> io::Result<()> {
+fn download(path: &Path) -> io::Result<()> {
     // curl でダウンロード（pnetのみで完結させるため外部コマンドを使用）
     let status = std::process::Command::new("curl")
         .args([
@@ -66,7 +72,7 @@ fn download(path: &PathBuf) -> io::Result<()> {
     if status.success() {
         Ok(())
     } else {
-        Err(io::Error::new(io::ErrorKind::Other, "curl failed"))
+        Err(io::Error::other("curl failed"))
     }
 }
 
@@ -83,16 +89,25 @@ fn parse_csv(path: &PathBuf) -> HashMap<u32, String> {
 
     let reader = io::BufReader::new(file);
     for (i, line) in reader.lines().enumerate() {
-        if i == 0 { continue; } // ヘッダースキップ
-        let line = match line { Ok(l) => l, Err(_) => continue };
+        if i == 0 {
+            continue;
+        } // ヘッダースキップ
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
 
         // CSVを簡易パース（カンマ区切り、ダブルクォート考慮）
         let parts = simple_csv_split(&line);
-        if parts.len() < 3 { continue; }
+        if parts.len() < 3 {
+            continue;
+        }
 
         // Assignment 列（例: "FCECDA"）を OUI として使う
         let hex = parts[1].trim().replace(['-', ':'], "");
-        if hex.len() != 6 { continue; }
+        if hex.len() != 6 {
+            continue;
+        }
 
         if let Ok(oui) = u32::from_str_radix(&hex, 16) {
             let vendor = parts[2].trim().trim_matches('"').to_string();

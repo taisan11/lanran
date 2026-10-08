@@ -15,7 +15,10 @@ use dns_lookup::lookup_addr;
 use mdns_sd::{ServiceDaemon, ServiceEvent};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
 use std::thread;
 use std::time::Duration;
 
@@ -39,28 +42,28 @@ pub fn resolve_all(ips: &[Ipv4Addr]) -> HashMap<Ipv4Addr, String> {
 
 /// PTR レコードによる逆引きDNS（並列）
 fn resolve_ptr_parallel(ips: &[Ipv4Addr]) -> HashMap<Ipv4Addr, String> {
-    let results = Arc::new(Mutex::new(HashMap::new()));
-    let mut handles = Vec::new();
+    const WORKERS: usize = 16;
+    let next = AtomicUsize::new(0);
+    let results = Mutex::new(HashMap::new());
+    let workers = ips.len().min(WORKERS);
 
-    for &ip in ips {
-        let results = Arc::clone(&results);
-        let handle = thread::spawn(move || {
-            if let Ok(name) = lookup_addr(&IpAddr::V4(ip)) {
-                // IPそのものが返ってきた場合は無視
-                if name != ip.to_string() {
-                    let mut map = results.lock().unwrap();
-                    map.insert(ip, name);
+    thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(&ip) = ips.get(index) else { break };
+                    if let Ok(name) = lookup_addr(&IpAddr::V4(ip))
+                        && name != ip.to_string()
+                    {
+                        results.lock().unwrap().insert(ip, name);
+                    }
                 }
-            }
-        });
-        handles.push(handle);
-    }
+            });
+        }
+    });
 
-    for h in handles {
-        h.join().ok();
-    }
-
-    Arc::try_unwrap(results).unwrap().into_inner().unwrap()
+    results.into_inner().unwrap()
 }
 
 /// mDNS によるホスト名解決
@@ -78,35 +81,46 @@ fn resolve_mdns(target_ips: &[Ipv4Addr], timeout: Duration) -> HashMap<Ipv4Addr,
         }
     };
 
-    // mDNSは "_services._dns-sd._udp.local." をブラウズするのが標準的だが、
-    // IPを直接知りたいので "_http._tcp.local." や全サービスを見てみる。
-    // mdns-sd では browse でホスト情報（アドレスを含む）が得られる。
-    let receiver = match mdns.browse("_services._dns-sd._udp.local.") {
+    // サービス種別を先に列挙し、その後各種別をbrowseしてアドレスを解決する。
+    let enumeration = match mdns.browse("_services._dns-sd._udp.local.") {
         Ok(r) => r,
         Err(_) => return result,
     };
-
-    let target_set: std::collections::HashSet<Ipv4Addr> = target_ips.iter().copied().collect();
     let start = std::time::Instant::now();
+    let enumeration_timeout = timeout / 2;
+    let mut service_types = std::collections::BTreeSet::new();
+    while start.elapsed() < enumeration_timeout {
+        if let Ok(ServiceEvent::ServiceFound(service_type, _)) =
+            enumeration.recv_timeout(Duration::from_millis(100))
+        {
+            service_types.insert(if service_type.ends_with('.') {
+                service_type
+            } else {
+                format!("{service_type}.")
+            });
+        }
+    }
+    let _ = mdns.stop_browse("_services._dns-sd._udp.local.");
+    let receivers: Vec<_> = service_types
+        .iter()
+        .filter_map(|service_type| mdns.browse(service_type).ok())
+        .collect();
+    let target_set: std::collections::HashSet<Ipv4Addr> = target_ips.iter().copied().collect();
+    let resolve_timeout = timeout.saturating_sub(start.elapsed());
+    let resolve_start = std::time::Instant::now();
 
-    loop {
-        if start.elapsed() >= timeout { break; }
-
-        match receiver.recv_timeout(Duration::from_millis(100)) {
-            Ok(ServiceEvent::ServiceResolved(info)) => {
+    while resolve_start.elapsed() < resolve_timeout {
+        for receiver in &receivers {
+            if let Ok(ServiceEvent::ServiceResolved(info)) = receiver.try_recv() {
                 for addr in info.get_addresses_v4() {
                     if target_set.contains(&addr) {
-                        // ホスト名から末尾のドットを除去
                         let hostname = info.get_hostname().trim_end_matches('.').to_string();
                         result.insert(addr, hostname);
                     }
                 }
             }
-            Ok(_) => {}
-            Err(_) => {
-                thread::sleep(Duration::from_millis(10));
-            }
         }
+        thread::sleep(Duration::from_millis(10));
     }
 
     mdns.shutdown().ok();
